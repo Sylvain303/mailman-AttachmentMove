@@ -16,3 +16,7 @@ Goal is to develop a custom handler which performs:
  * Content-Type: image/png; name="clip-24.png"
 
 The text/html is the old one.
+
+```bash
+$ withlist -l -r test_handler listname MyHandler /path/to/some_test_2_pj.eml  > /tmp/out.handler && less -40 /tmp/out.handler
+```
