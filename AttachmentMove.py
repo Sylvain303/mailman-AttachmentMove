@@ -1,8 +1,10 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 # vim: et sw=4 ts=4:
-# http://wiki.list.org/download/attachments/4030615/MyHandler.py?version=1&modificationDate=1283485784289
-
+#
+# This script is opensource and can be found here:
+# https://github.com/Sylvain303/mailman-AttachmentMove
+#
 # Copyright (C) 2001-2011 by the Free Software Foundation, Inc.
 #
 # This program is free software; you can redistribute it and/or
@@ -20,10 +22,20 @@
 # Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston, MA 02110-1301,
 # USA.
 
-""" Mail attachment detachement filter
+""" Mail attachment detach filter
 
-The detached parts are stored as attachment on the list archive. But the used 
-attachment is a copy uploaded to a remote location given by:
+The detached parts are stored as attachment on the list archive. But the 
+attachment used is a fresh copy uploaded to a remote location given by the
+extra parameters:
+
+mlist.ftp_remote_host = 'ftp.example.com'
+mlist.ftp_remote_login = 'username'
+mlist.ftp_remote_pass = 'secr3te'
+# put the ending slash /
+mlist.remote_http_base = 'http://example.com/root/for/username/'
+
+can be added from command line with list_config
+
 
 to be set in lists/yourlistname/extend.py
 
@@ -60,7 +72,7 @@ from types import IntType, StringType
 from email.Utils import parsedate
 from email.Parser import HeaderParser
 from email.Generator import Generator
-from email.Charset import Charset
+from email.Charset import Charset, QP, BASE64
 from email.MIMEMultipart import MIMEMultipart
 from email.mime.image import MIMEImage
 from email import encoders
@@ -180,6 +192,7 @@ def process(mlist, msg, msgdata=None):
     syslog('debug', 'dir: %s', dir)
     # Now walk over all subparts of this message and scrub out various types
     seen_attachment = []
+    boundary = None
     
     for part in msg.walk():
         ctype = part.get_content_type()
@@ -194,20 +207,27 @@ def process(mlist, msg, msgdata=None):
         elif ctype == 'message/rfc822':
             continue
         elif partlen > 0 and not part.is_multipart():
-            # we met an attachment, we are going to detach it
-            # and store it localy and remotly
-            syslog('debug', 'not multipart part, detach %s', ctype)
+            # we met an attachment
+            syslog('debug', '> part is attachment %s', ctype)
+            if part.has_key('Content-ID'):
+                syslog('debug', '> part as Content-ID %s', part['Content-ID'])
+                # keep it
+                continue
+            else:
+                syslog('debug', '> detaching...')
+
+            # we are going to detach it and store it localy and remotly
             # a dic storing attachment related data
             attachment = {}
             fname = get_attachment_fname(mlist, part)
             attachment['name'] = fname
             attachment['orig'] = fname
             attachment['size'] = sizeof_fmt(partlen)
-            syslog('debug', 'att: %s', fname)
+            syslog('debug', '> att: %s', fname)
             # save attachment to the disk, at this stage duplicate name
             # are resolved
             path, url = save_attachment(mlist, part, dir)
-            syslog('debug', 'detached: %s %s', path, url)
+            syslog('debug', '> detached: %s %s', path, url)
             # remote storing, no trouble very simple code here using
             # secured FTP and the remote user config
             remote_fname = ftp_upload_attchment(mlist, path)
@@ -223,10 +243,18 @@ def process(mlist, msg, msgdata=None):
             continue
         elif mutipartre.search(ctype):
             # match multipart/*
-            syslog('debug', '>>> is multipart part %s', ctype)
+            boundary = part.get_boundary()
+            syslog('debug', '>>> is multipart part %s, boundary: %s',
+                ctype, boundary)
             continue
         else:
+            if boundary != None and part.get_boundary() == boundary:
+                syslog('debug', 'same boundary skiped : %s', ctype)
+                continue
+            else:
+                boundary = None
             syslog('debug', 'attachement : %s', ctype)
+        syslog('debug', 'end of loop?? : %s', ctype)
 
     if not modified:
         return msg
@@ -235,7 +263,7 @@ def process(mlist, msg, msgdata=None):
     footer_attach = ''
     html_footer_attach = ''
     replace = {}
-    clip_cid = "12345789"
+    clip_cid = "clip.12345789"
     clip = MIMEImage(ATTACH_CLIP, 'png', _encoder=encoders.encode_noop)
     clip['Content-Transfer-Encoding'] = 'base64'
     clip.add_header('Content-ID', '<part1.%s>' % clip_cid)
@@ -290,6 +318,7 @@ def fix_msg(msg, txt_attach, html_attach, clip_payload):
             # add footer to plain text
             new_footer = TXT_ATTACHT_REPLACE + txt_attach
             msg.set_payload(msg.get_payload() + new_footer)
+            syslog('debug', 'add txt footer')
             return msg
         elif ctype == 'text/html':
             # build multipart/related for HTML
@@ -297,9 +326,22 @@ def fix_msg(msg, txt_attach, html_attach, clip_payload):
 
             html_footer = HTML_ATTACHMENT_HOLDER % {'HTML_HERE': html_attach}
             html_footer += '</body>'
-            old_content = msg.get_payload()
+            old_content = msg.get_payload(decode=True)
             new_content = re.sub(r'</body>', html_footer, old_content)
+            if old_content != new_content:
+                syslog('debug', 'add html footer')
+            else:
+                syslog('debug', 'no html footer added')
+            charset = msg.get_content_charset()
+            syslog('debug', 'get_content_charset: %s, Content-Transfer-Encoding: %s', charset, msg['Content-Transfer-Encoding'])
+
+            del msg['content-transfer-encoding']
+            charset = Charset("utf-8")
+            charset.header_encoding = BASE64
+            charset.body_encoding = BASE64
+            msg.set_charset(charset)
             msg.set_payload(new_content)
+
             related.attach(msg)
             related.attach(clip_payload)
             return related

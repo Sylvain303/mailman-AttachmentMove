@@ -16,3 +16,20 @@ Goal is to develop a custom handler which performs:
  * Content-Type: image/png; name="clip-24.png"
 
 The text/html is the old one.
+
+What if the posted message has already this format. Some embeded images for example.
+
+
+
+More documentation about writing your custom Handler for mailman can be found 
+here: 
+
+Mailman processes incoming messages through a pipeline of handlers which each do parts of the message processing <http://wiki.list.org/pages/viewpage.action?pageId=7602227>
+
+4.67. How do I implement a custom handler in Mailman, <http://wiki.list.org/pages/viewpage.action?pageId=4030615>
+
+Python documentation on the message object used to process parts
+https://docs.python.org/2/library/email.message.html
+
+An example of mailman's handler. I used Scrubber.py as a start.
+http://wiki.list.org/download/attachments/4030615/MyHandler.py?version=1&modificationDate=1283485784289
