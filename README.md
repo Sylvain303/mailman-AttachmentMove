@@ -17,9 +17,8 @@ Goal is to develop a custom handler which performs:
 
 The text/html is the old one.
 
+
 What if the posted message has already this format. Some embeded images for example.
-
-
 
 More documentation about writing your custom Handler for mailman can be found 
 here: 
@@ -33,3 +32,8 @@ https://docs.python.org/2/library/email.message.html
 
 An example of mailman's handler. I used Scrubber.py as a start.
 http://wiki.list.org/download/attachments/4030615/MyHandler.py?version=1&modificationDate=1283485784289
+
+```bash
+$ withlist -l -r test_handler listname MyHandler /path/to/some_test_2_pj.eml  > /tmp/out.handler && less -40 /tmp/out.handler
+```
+
