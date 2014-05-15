@@ -25,36 +25,18 @@
 """ Mail attachment detach filter
 
 The detached parts are stored as attachment on the list archive. But the 
-attachment used is a fresh copy uploaded to a remote location given by the
-extra parameters:
+attachment used is a fresh copy, uploaded to a remote location given by the
+extra required parameters:
 
 mlist.ftp_remote_host = 'ftp.example.com'
 mlist.ftp_remote_login = 'username'
 mlist.ftp_remote_pass = 'secr3te'
 # put the ending slash /
 mlist.remote_http_base = 'http://example.com/root/for/username/'
+# optional, a prefix on the remote storage:
+mlist.ftp_upload_prefix = 'listname_or_dev_'
 
-can be added from command line with list_config
-
-
-to be set in lists/yourlistname/extend.py
-
-import copy
-from Mailman import mm_cfg
-def extend(mlist):
-    mlist.pipeline = copy.copy(mm_cfg.GLOBAL_PIPELINE)
-    # The next line inserts MyHandler ahead of Moderate.
-    mlist.pipeline.insert(mlist.pipeline.index('Moderate'), 'MyHandler')
-    # Alternatively, the next line replaces Moderate with MyHandler
-    #mlist.pipeline[mlist.pipeline.index('Moderate')] = 'MyHandler'
-    # Pick one of the two above example alternatives
-
-    mlist.ftp_remote_host = 'ftp.example.com'
-    mlist.ftp_remote_login = 'username'
-    mlist.ftp_remote_pass = 'secr3te'
-    # put the ending slash /
-    mlist.remote_http_base = 'http://example.com/root/for/username/'
-
+See README.md for more documentation. 
 """
 
 
@@ -97,7 +79,7 @@ sre = re.compile(r'[^-\w.]')
 # Regexp to strip out leading dots
 dre = re.compile(r'^\.*')
 
-# match mutipart content-type
+# match multipart content-type
 mutipartre = re.compile(r'^multipart/')
 
 BR = '<br>\n'
@@ -131,7 +113,7 @@ TXT_ATTACHT_REPLACE = """
 --------------------
 Mailman attachment :
 --------------------
-Pièce jointe disponible ici :
+Pièce(s) jointe(s) disponible ici :
 """
 
 # Content-Type: image/png; name="attachment-24.png"
@@ -182,6 +164,7 @@ except ImportError:
 
 def process(mlist, msg, msgdata=None):
     # main entry code for the Handler
+    syslog('debug', 'AttachmentMove Enter ' + '-' * 30)
 
     if msgdata is None:
         msgdata = {}
@@ -189,7 +172,6 @@ def process(mlist, msg, msgdata=None):
     modified = False
     
     dir = calculate_attachments_dir(mlist, msg, msgdata)
-    syslog('debug', 'dir: %s', dir)
     # Now walk over all subparts of this message and scrub out various types
     seen_attachment = []
     boundary = None
@@ -230,9 +212,13 @@ def process(mlist, msg, msgdata=None):
             syslog('debug', '> detached: %s %s', path, url)
             # remote storing, no trouble very simple code here using
             # secured FTP and the remote user config
-            remote_fname = ftp_upload_attchment(mlist, path)
+            if 'disable_upload' in msgdata:
+                syslog('debug', '> uploading disabled')
+                remote_fname = 'disabled'
+            else:
+                remote_fname = ftp_upload_attchment(mlist, path)
             # build the new url of the document, will be used when 
-            # modifying parts see bellow.
+            # modifying parts, see bellow.
             url = mlist.remote_http_base + remote_fname
             attachment['url'] = url
             # replace the attachment by a small plain/text 
@@ -319,6 +305,9 @@ def fix_msg(msg, data):
                  r.get_content_type() == 'multipart/related':
                 for newp in r.get_payload():
                     msg.attach(newp)
+            elif r == None:
+                # removed
+                continue
             else:
                 msg.attach(r)
         # finished
@@ -326,11 +315,19 @@ def fix_msg(msg, data):
     else:
         # process the 'leaf' parts
         ctype = msg.get_content_type()
-        if ctype == 'text/plain' and not msg['X-Mailman-Part']:
-            # add footer to plain text
-            new_footer = TXT_ATTACHT_REPLACE + data['footer_attach']
-            msg.set_payload(msg.get_payload() + new_footer)
-            syslog('debug', 'add txt footer')
+        # will be used to write back payload with correct encoding
+        charset = msg.get_content_charset()
+        if ctype == 'text/plain':
+            if not msg['X-Mailman-Part']:
+                # add footer to plain text
+                new_footer = TXT_ATTACHT_REPLACE + data['footer_attach']
+                old_content = msg.get_payload()
+                del msg['content-transfer-encoding']
+                msg.set_payload(old_content + new_footer, charset)
+                syslog('debug', 'add txt footer')
+            else:
+                # remove !
+                msg = None
             return msg
         elif ctype == 'text/html':
             # build multipart/related for HTML, will be canceled by the
@@ -340,7 +337,6 @@ def fix_msg(msg, data):
             html_footer = HTML_ATTACHMENT_HOLDER % \
                 {'HTML_HERE': data['html_footer_attach'] }
             html_footer += '</body>'
-            charset = msg.get_content_charset()
             old_content = msg.get_payload(decode=True)
             new_content = re.sub(r'</body>', html_footer, old_content)
 
@@ -540,6 +536,9 @@ def save_attachment(mlist, msg, dir):
 def ftp_upload_attchment(mlist, full_fname):
     syslog('debug', 'uploading to %s', mlist.ftp_remote_host)
     fname = os.path.basename(full_fname)
+    if hasattr(mlist, 'ftp_upload_prefix'):
+        fname = mlist.ftp_upload_prefix + fname
+
     ftps = FTP_TLS(mlist.ftp_remote_host)
     ftps.login(mlist.ftp_remote_login, mlist.ftp_remote_pass)
     ftps.prot_p()
