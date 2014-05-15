@@ -260,25 +260,28 @@ def process(mlist, msg, msgdata=None):
         return msg
 
     # rewrite content
-    footer_attach = ''
-    html_footer_attach = ''
-    replace = {}
-    clip_cid = "clip.12345789"
-    clip = MIMEImage(ATTACH_CLIP, 'png', _encoder=encoders.encode_noop)
-    clip['Content-Transfer-Encoding'] = 'base64'
-    clip.add_header('Content-ID', '<part1.%s>' % clip_cid)
+    # d is a dict for simple storage of mutliple parameters
+    # will be passed to the recursive func fix_msg()
+    d = {}
+    d['footer_attach'] = ''
+    d['html_footer_attach'] = ''
 
+    clip_cid = "clip.12345789"
+    d['clip'] = MIMEImage(ATTACH_CLIP, 'png', _encoder=encoders.encode_noop)
+    d['clip']['Content-Transfer-Encoding'] = 'base64'
+    d['clip'].add_header('Content-ID', '<part1.%s>' % clip_cid)
+
+    replace = {}
+    replace['CID_clip'] = 'part1.' + clip_cid
     # compose attachment url
     for att in seen_attachment:
-        footer_attach += make_link(att) + "\n"
-
-        replace['CID_clip'] = 'part1.' + clip_cid
+        d['footer_attach'] += make_link(att) + "\n"
         replace['FNAME_replace'] = att['orig']
         replace['URL_replace'] = att['url']
         replace['SIZE_replace'] = att['size']
-        html_footer_attach += HTML_ATTACHMENT_CLIP_TPL % replace
+        d['html_footer_attach'] += HTML_ATTACHMENT_CLIP_TPL % replace
    
-    fix_msg(msg, footer_attach, html_footer_attach, clip)
+    fix_msg(msg, d)
 
     return msg
 
@@ -297,7 +300,7 @@ def reset_payload(msg, txt, fname, url):
     msg.add_header('Content-Description', "Attachment-moved by Mailman")
 
 
-def fix_msg(msg, txt_attach, html_attach, clip_payload):
+def fix_msg(msg, data):
     """
     Scan the message recursively to replace the text/html by a 
     multipart/related containing the original text/html and the new 
@@ -309,41 +312,48 @@ def fix_msg(msg, txt_attach, html_attach, clip_payload):
         # remove the next level parts, then process and reattach them
         msg.set_payload(None)
         for p in parts:
-            msg.attach(fix_msg(p, txt_attach, html_attach, clip_payload))
+            # recursive call
+            r = fix_msg(p, data)
+            # don't embbed related twice
+            if msg.get_content_type() == 'multipart/related' and \
+                 r.get_content_type() == 'multipart/related':
+                for newp in r.get_payload():
+                    msg.attach(newp)
+            else:
+                msg.attach(r)
+        # finished
         return msg
     else:
         # process the 'leaf' parts
         ctype = msg.get_content_type()
         if ctype == 'text/plain' and not msg['X-Mailman-Part']:
             # add footer to plain text
-            new_footer = TXT_ATTACHT_REPLACE + txt_attach
+            new_footer = TXT_ATTACHT_REPLACE + data['footer_attach']
             msg.set_payload(msg.get_payload() + new_footer)
             syslog('debug', 'add txt footer')
             return msg
         elif ctype == 'text/html':
-            # build multipart/related for HTML
+            # build multipart/related for HTML, will be canceled by the
+            # parent recursive call if needed
             related = MIMEMultipart('related')
 
-            html_footer = HTML_ATTACHMENT_HOLDER % {'HTML_HERE': html_attach}
+            html_footer = HTML_ATTACHMENT_HOLDER % \
+                {'HTML_HERE': data['html_footer_attach'] }
             html_footer += '</body>'
+            charset = msg.get_content_charset()
             old_content = msg.get_payload(decode=True)
             new_content = re.sub(r'</body>', html_footer, old_content)
+
             if old_content != new_content:
                 syslog('debug', 'add html footer')
             else:
                 syslog('debug', 'no html footer added')
-            charset = msg.get_content_charset()
-            syslog('debug', 'get_content_charset: %s, Content-Transfer-Encoding: %s', charset, msg['Content-Transfer-Encoding'])
 
             del msg['content-transfer-encoding']
-            charset = Charset("utf-8")
-            charset.header_encoding = BASE64
-            charset.body_encoding = BASE64
-            msg.set_charset(charset)
-            msg.set_payload(new_content)
+            msg.set_payload(new_content, charset)
 
             related.attach(msg)
-            related.attach(clip_payload)
+            related.attach(data['clip'])
             return related
         # unmodified
         return msg
@@ -528,12 +538,15 @@ def save_attachment(mlist, msg, dir):
     return path, url
 
 def ftp_upload_attchment(mlist, full_fname):
+    syslog('debug', 'uploading to %s', mlist.ftp_remote_host)
     fname = os.path.basename(full_fname)
     ftps = FTP_TLS(mlist.ftp_remote_host)
     ftps.login(mlist.ftp_remote_login, mlist.ftp_remote_pass)
     ftps.prot_p()
     ftps.storbinary('STOR ' + fname, open(full_fname, 'rb'))
     ftps.quit()
+    syslog('debug', 'uploading OK')
 
+    # return the real uploaded filename
     return fname
 
