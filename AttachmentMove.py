@@ -1,6 +1,6 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
-# vim: et sw=4 ts=4:
+# vim: et sw=4 ts=4 sts=4:
 #
 # This script is opensource and can be found here:
 # https://github.com/Sylvain303/mailman-AttachmentMove
@@ -48,6 +48,8 @@ import time
 import errno
 import binascii
 import tempfile
+import ftplib
+
 from cStringIO import StringIO
 from types import IntType, StringType
 
@@ -69,7 +71,6 @@ from Mailman.i18n import _
 from Mailman.Logging.Syslog import syslog
 from Mailman.Utils import sha_new
 
-from ftplib import FTP_TLS
 
 # Path characters for common platforms
 pre = re.compile(r'[/\\:]')
@@ -162,9 +163,15 @@ except ImportError:
             check(mimetypes.common_types)
         return all
 
+DEBUG = False
+
 def process(mlist, msg, msgdata=None):
     # main entry code for the Handler
-    syslog('debug', 'AttachmentMove Enter ' + '-' * 30)
+    global DEBUG
+    if hasattr(mlist, 'debug'):
+        DEBUG = mlist.debug
+
+    debug('AttachmentMove Enter ' + '-' * 30)
 
     if msgdata is None:
         msgdata = {}
@@ -175,11 +182,17 @@ def process(mlist, msg, msgdata=None):
     # Now walk over all subparts of this message and scrub out various types
     seen_attachment = []
     boundary = None
+
+    # as we replace some content we will have to fight with encoding
+    # set some default list encoding
+    lcset = Utils.GetCharSet(mlist.preferred_language)
+    lcset_out = Charset(lcset).output_charset or lcset
+
     
     for part in msg.walk():
         ctype = part.get_content_type()
         partlen = len(part.get_payload())
-        syslog('debug', 'met part : %s %d', ctype, partlen)
+        debug('met part : %s %d', ctype, partlen)
 
         # If the part is text/plain, we leave it alone
         if ctype == 'text/plain':
@@ -190,30 +203,31 @@ def process(mlist, msg, msgdata=None):
             continue
         elif partlen > 0 and not part.is_multipart():
             # we met an attachment
-            syslog('debug', '> part is attachment %s', ctype)
+            debug('> part is attachment %s', ctype)
             if part.has_key('Content-ID'):
-                syslog('debug', '> part as Content-ID %s', part['Content-ID'])
+                debug('> part as Content-ID %s', part['Content-ID'])
                 # keep it
                 continue
             else:
-                syslog('debug', '> detaching...')
+                debug('> detaching...')
 
             # we are going to detach it and store it localy and remotly
             # a dic storing attachment related data
             attachment = {}
             fname = get_attachment_fname(mlist, part)
+            debug('get_attachment_fname:%s, type:%s', fname, type(fname))
             attachment['name'] = fname
             attachment['orig'] = fname
             attachment['size'] = sizeof_fmt(partlen)
-            syslog('debug', '> att: %s', fname)
+            debug('> att: %s', fname)
             # save attachment to the disk, at this stage duplicate name
             # are resolved
             path, url = save_attachment(mlist, part, dir)
-            syslog('debug', '> detached: %s %s', path, url)
+            debug('> detached: %s %s', path, url)
             # remote storing, no trouble very simple code here using
             # secured FTP and the remote user config
             if 'disable_upload' in msgdata:
-                syslog('debug', '> uploading disabled')
+                debug('> uploading disabled')
                 remote_fname = 'disabled'
             else:
                 remote_fname = ftp_upload_attchment(mlist, path)
@@ -221,26 +235,25 @@ def process(mlist, msg, msgdata=None):
             # modifying parts, see bellow.
             url = mlist.remote_http_base + remote_fname
             attachment['url'] = url
-            # replace the attachment by a small plain/text 
-            new_payload = TXT_ATTACHT_REPLACE + make_link(attachment)
-            reset_payload(part, new_payload, fname, url)
+            reset_payload(part, 'removed', fname, url)
             seen_attachment.append(attachment)
             modified = True
             continue
         elif mutipartre.search(ctype):
             # match multipart/*
             boundary = part.get_boundary()
-            syslog('debug', '>>> is multipart part %s, boundary: %s',
+            debug('>>> is multipart part %s, boundary: %s',
                 ctype, boundary)
             continue
         else:
             if boundary != None and part.get_boundary() == boundary:
-                syslog('debug', 'same boundary skiped : %s', ctype)
+                debug('same boundary skiped : %s', ctype)
                 continue
             else:
                 boundary = None
-            syslog('debug', 'attachement : %s', ctype)
-        syslog('debug', 'end of loop?? : %s', ctype)
+            debug('attachement : %s', ctype)
+
+        debug('end of loop?? : %s', ctype)
 
     if not modified:
         return msg
@@ -253,6 +266,7 @@ def process(mlist, msg, msgdata=None):
     d['html_footer_attach'] = ''
 
     clip_cid = "clip.12345789"
+    # the clip is already base64 encoded above
     d['clip'] = MIMEImage(ATTACH_CLIP, 'png', _encoder=encoders.encode_noop)
     d['clip']['Content-Transfer-Encoding'] = 'base64'
     d['clip'].add_header('Content-ID', '<part1.%s>' % clip_cid)
@@ -267,6 +281,9 @@ def process(mlist, msg, msgdata=None):
         replace['SIZE_replace'] = att['size']
         d['html_footer_attach'] += HTML_ATTACHMENT_CLIP_TPL % replace
    
+    debug('================ start fix_msg() ==================')
+    d['lcset'] = lcset
+    d['lcset_out'] = lcset_out
     fix_msg(msg, d)
 
     return msg
@@ -317,14 +334,17 @@ def fix_msg(msg, data):
         ctype = msg.get_content_type()
         # will be used to write back payload with correct encoding
         charset = msg.get_content_charset()
+        debug('ctype:%s charset:%s', ctype, charset)
         if ctype == 'text/plain':
             if not msg['X-Mailman-Part']:
-                # add footer to plain text
-                new_footer = TXT_ATTACHT_REPLACE + data['footer_attach']
+                # A normal txt part, add footer to plain text
+                new_footer = TXT_ATTACHT_REPLACE
+                new_footer += data['footer_attach']
                 old_content = msg.get_payload()
                 del msg['content-transfer-encoding']
+                debug('old_content:%s, new_footer:%s', type(old_content), type(new_footer))
                 msg.set_payload(old_content + new_footer, charset)
-                syslog('debug', 'add txt footer')
+                debug('add txt footer')
             else:
                 # remove !
                 msg = None
@@ -341,9 +361,9 @@ def fix_msg(msg, data):
             new_content = re.sub(r'</body>', html_footer, old_content)
 
             if old_content != new_content:
-                syslog('debug', 'add html footer')
+                debug('add html footer')
             else:
-                syslog('debug', 'no html footer added')
+                debug('no html footer added')
 
             del msg['content-transfer-encoding']
             msg.set_payload(new_content, charset)
@@ -355,7 +375,7 @@ def fix_msg(msg, data):
         return msg
 
 def make_link(att):
-    return att['orig'] + ' <' + att['url'] + '> (' + att['size'] + ')' 
+    return att['orig'] + ' <' + att['url']  + '> (' + att['size'] + ')' 
 
 def sizeof_fmt(num):
     #for x in ['bytes','KB','MB','GB','TB']:
@@ -438,11 +458,22 @@ def makedirs(dir):
     except OSError, e:
         if e.errno <> errno.EEXIST: raise
 
+import unicodedata
+
+def remove_accents(input_str):
+    try:
+        nkfd_form = unicodedata.normalize('NFKD', input_str)
+    except TypeError:
+        nkfd_form = unicodedata.normalize('NFKD', unicode(input_str))
+
+    return u"".join([c for c in nkfd_form if not unicodedata.combining(c)])
+
 def get_attachment_fname(mlist, msg):
     # i18n file name is encoded
     lcset = Utils.GetCharSet(mlist.preferred_language)
     filename = Utils.oneline(msg.get_filename(''), lcset)
-    return filename
+    # filename can be 'str' or unicode
+    return remove_accents(filename).encode('ascii')
 
 
 def save_attachment(mlist, msg, dir):
@@ -534,18 +565,38 @@ def save_attachment(mlist, msg, dir):
     return path, url
 
 def ftp_upload_attchment(mlist, full_fname):
-    syslog('debug', 'uploading to %s', mlist.ftp_remote_host)
+    debug('uploading to %s', mlist.ftp_remote_host)
     fname = os.path.basename(full_fname)
     if hasattr(mlist, 'ftp_upload_prefix'):
         fname = mlist.ftp_upload_prefix + fname
 
-    ftps = FTP_TLS(mlist.ftp_remote_host)
-    ftps.login(mlist.ftp_remote_login, mlist.ftp_remote_pass)
-    ftps.prot_p()
-    ftps.storbinary('STOR ' + fname, open(full_fname, 'rb'))
-    ftps.quit()
-    syslog('debug', 'uploading OK')
+    # try secure ftp first
+    retry_login = 0
+    ftp = ftplib.FTP_TLS(mlist.ftp_remote_host)
 
-    # return the real uploaded filename
+    try:
+        ftp.login(mlist.ftp_remote_login, mlist.ftp_remote_pass)
+        ftp.prot_p()
+    except ftplib.error_perm:
+        retry_login = 1
+        ftp.quit()
+        # fall back to normal FTP
+        ftp = ftplib.FTP(mlist.ftp_remote_host)
+
+    if retry_login:
+        ftp.login(mlist.ftp_remote_login, mlist.ftp_remote_pass)
+    
+    if hasattr(mlist, 'ftp_remote_dir'):
+        # missing folder or wrong path will raise exception
+        ftp.cwd(mlist.ftp_remote_dir)
+
+    ftp.storbinary('STOR ' + fname, open(full_fname, 'rb'))
+    ftp.quit()
+    debug('uploading OK')
+
     return fname
+
+def debug(msg, *args, **kws):
+    if DEBUG == 1:
+        syslog.write_ex('debug', msg, args, kws)
 
