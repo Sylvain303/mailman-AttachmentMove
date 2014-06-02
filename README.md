@@ -28,7 +28,7 @@ cd /to/some/cool/folder
 git clone https://github.com/Sylvain303/mailman-AttachmentMove.git
 # for debian, go to yours mailman code folder
 cd /usr/lib/mailman/Mailman/Handlers/
-ls -s /to/some/cool/folder/mailman-AttachmentMove/mailman-AttachmentMove.py .
+ls -s /to/some/cool/folder/mailman-AttachmentMove/AttachmentMove.py .
 ```
 
 The detached parts will be stored on the mailman server to generate unique filename. But the 
@@ -47,7 +47,7 @@ mlist.ftp_upload_prefix = 'listname_or_dev_'
 # optional, a folder on the remote storage. Not used in the linking.
 mlist.ftp_remote_dir = 'remote_folder'
 
-# optionanl, debug, will log debug() call in /var/log/mailman/debug (debian)
+# optional, debug, will log debug() call in /var/log/mailman/debug (debian)
 mlist.debug = 1
 
 # required, install the handler in the pipeline
@@ -82,7 +82,7 @@ mlist.pipeline = [
 
 store those parameters in a file tempfile.py. You may want to keep this config file somewhere handy because config_list -o doesn't list custom parameters.
 
-from command line with: 
+Load the config from command line with: 
 ```bash
 config_list -i tempfile.py listname
 ```
