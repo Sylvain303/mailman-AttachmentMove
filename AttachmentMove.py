@@ -33,8 +33,11 @@ mlist.ftp_remote_login = 'username'
 mlist.ftp_remote_pass = 'secr3te'
 # put the ending slash /
 mlist.remote_http_base = 'http://example.com/root/for/username/'
+
 # optional, a prefix on the remote storage:
 mlist.ftp_upload_prefix = 'listname_or_dev_'
+# optional, a folder on the remote storage. Not used in the linking.
+mlist.ftp_remote_dir = 'remote_folder'
 
 See README.md for more documentation. 
 """
@@ -86,6 +89,7 @@ mutipartre = re.compile(r'^multipart/')
 BR = '<br>\n'
 SPACE = ' '
 
+# the html used to insert moved attachment
 HTML_ATTACHMENT_HOLDER = """
    <br>
    <div style="padding: 15px; background-color: rgb(217, 237, 255);">
@@ -97,6 +101,7 @@ HTML_ATTACHMENT_HOLDER = """
    </div>
 """
 
+# template used inside HTML_ATTACHMENT_HOLDER, for each attachment
 HTML_ATTACHMENT_CLIP_TPL = """
 <div style="border: 1px solid rgb(205, 205, 205); border-radius:
   5px 5px 5px 5px; margin-top: 10px; margin-bottom: 10px;
@@ -110,6 +115,7 @@ HTML_ATTACHMENT_CLIP_TPL = """
 </div>
 """
 
+# plain text template
 TXT_ATTACHT_REPLACE = """
 --------------------
 Mailman attachment :
@@ -123,7 +129,6 @@ Pièce(s) jointe(s) disponible ici :
 # Content-Disposition: inline; filename="attachment-24.png"
 
 # embeded clip picture base64
-
 ATTACH_CLIP = """
 iVBORw0KGgoAAAANSUhEUgAAABgAAAAYCAYAAADgdz34AAAABHNCSVQICAgIfAhkiAAAAAlw
 SFlzAAAN1wAADdcBQiibeAAAABl0RVh0U29mdHdhcmUAd3d3Lmlua3NjYXBlLm9yZ5vuPBoA
@@ -163,6 +168,7 @@ except ImportError:
             check(mimetypes.common_types)
         return all
 
+# internal global to handle debugging, use mlist.debug = 1 to enable it
 DEBUG = False
 
 def process(mlist, msg, msgdata=None):
@@ -178,7 +184,8 @@ def process(mlist, msg, msgdata=None):
     
     modified = False
     
-    dir = calculate_attachments_dir(mlist, msg, msgdata)
+    #dir = calculate_attachments_dir(mlist, msg, msgdata)
+    dir = 'attachments-moved'
     # Now walk over all subparts of this message and scrub out various types
     seen_attachment = []
     boundary = None
@@ -284,6 +291,10 @@ def process(mlist, msg, msgdata=None):
     debug('================ start fix_msg() ==================')
     d['lcset'] = lcset
     d['lcset_out'] = lcset_out
+
+    d['do_txt'] = True
+    d['do_html'] = True
+
     fix_msg(msg, d)
 
     return msg
@@ -307,7 +318,8 @@ def fix_msg(msg, data):
     """
     Scan the message recursively to replace the text/html by a 
     multipart/related containing the original text/html and the new 
-    clip_payload png attachment
+    clip_payload png attachment. The attachment detected and moved at
+    the first pass (with Header X-Mailman-Part) will be removed.
     """
 
     if msg.is_multipart():
@@ -336,20 +348,27 @@ def fix_msg(msg, data):
         charset = msg.get_content_charset()
         debug('ctype:%s charset:%s', ctype, charset)
         if ctype == 'text/plain':
-            if not msg['X-Mailman-Part']:
+            if msg['X-Mailman-Part']:
+                # remove it!
+                return None
+
+            if data['do_txt']:
                 # A normal txt part, add footer to plain text
                 new_footer = TXT_ATTACHT_REPLACE
                 new_footer += data['footer_attach']
-                old_content = msg.get_payload()
+                old_content = msg.get_payload(decode=True)
+                debug('old_content:%s, new_footer:%s', \
+                    type(old_content), type(new_footer))
+
+                del msg['Content-type']
                 del msg['content-transfer-encoding']
-                debug('old_content:%s, new_footer:%s', type(old_content), type(new_footer))
-                msg.set_payload(old_content + new_footer, charset)
+                msg.set_payload(old_content + new_footer, charset='UTF-8')
+
                 debug('add txt footer')
-            else:
-                # remove !
-                msg = None
+                data['do_txt'] = False
+
             return msg
-        elif ctype == 'text/html':
+        elif ctype == 'text/html' and data['do_html']:
             # build multipart/related for HTML, will be canceled by the
             # parent recursive call if needed
             related = MIMEMultipart('related')
@@ -370,6 +389,7 @@ def fix_msg(msg, data):
 
             related.attach(msg)
             related.attach(data['clip'])
+            data['do_html'] = False
             return related
         # unmodified
         return msg
@@ -443,7 +463,9 @@ def calculate_attachments_dir(mlist, msg, msgdata):
         msgid = msg['Message-ID'] = Utils.unique_message_id(mlist)
     # We assume that the message id actually /is/ unique!
     digest = sha_new(msgid).hexdigest()
-    return os.path.join('attachments', datedir, digest[:4] + digest[-4:])
+    # hash disabled to handle file duplicate over mutiple email.
+    #return os.path.join('attachments', datedir, digest[:4] + digest[-4:])
+    return os.path.join('attachments', datedir)
 
 
 def makedirs(dir):
