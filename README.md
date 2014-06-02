@@ -52,7 +52,8 @@ mlist.debug = 1
 
 # required, install the handler in the pipeline
 
-# inserting the code in the pipeline, See bellow about how to find this list of Handler
+# inserting the code in the pipeline
+# See bellow about how to find this list of Handlers
 mlist.pipeline = [
     'SpamDetect',
     'Approve',
@@ -131,6 +132,7 @@ restart mailman:
 ### Mailman pipeline
 
 The pipeline may change depending the version of mailman. It is defined in the code (/usr/lib/mailman in debian package)
+We will copy it to suite our needs on a per list basis.
 
 1. Open Mailman/Defaults.py
 2. Copy the definition of GLOBAL_PIPELINE
@@ -173,8 +175,20 @@ If nothing seems to happend…
 config_list -i <(echo mlist.debug=1) listname
 ```
 - test it from command line see bellow
+- check folder list permissions:
+```bash
+ls -l /var/lib/mailman/archives/private/
+total 24
+drwxrwsr-x 6 www-data list     4096 mai    8 03:27 somelist
+drwxrwsr-x 2 www-data list     4096 avril 11 16:10 somelist.mbox
+drwxrwsr-x 3 root     www-data 4096 juin   1 09:24 attachment-move
+drwxrwsr-x 2 root     www-data 4096 mai   31 10:29 attachment-move.mbox
+drwxrwsr-x 2 root     www-data 4096 mars  13 10:34 mailman
+drwxrwsr-x 2 root     www-data 4096 mars  13 10:34 mailman.mbox
 
-
+cd /var/lib/mailman/archives/private/
+chown -R www-data:list attachment-move*
+```
 
 ## More documentation about writing custom Handler for mailman
 
