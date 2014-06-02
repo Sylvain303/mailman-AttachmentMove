@@ -346,6 +346,8 @@ def fix_msg(msg, data):
         ctype = msg.get_content_type()
         # will be used to write back payload with correct encoding
         charset = msg.get_content_charset()
+        c = Charset('utf-8')
+        c.body_encoding = QP
         debug('ctype:%s charset:%s', ctype, charset)
         if ctype == 'text/plain':
             if msg['X-Mailman-Part']:
@@ -362,7 +364,7 @@ def fix_msg(msg, data):
 
                 del msg['Content-type']
                 del msg['content-transfer-encoding']
-                msg.set_payload(old_content + new_footer, charset='UTF-8')
+                msg.set_payload(old_content + new_footer, charset=c)
 
                 debug('add txt footer')
                 data['do_txt'] = False
@@ -385,7 +387,7 @@ def fix_msg(msg, data):
                 debug('no html footer added')
 
             del msg['content-transfer-encoding']
-            msg.set_payload(new_content, charset)
+            msg.set_payload(new_content, charset=c)
 
             related.attach(msg)
             related.attach(data['clip'])
